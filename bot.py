@@ -72,16 +72,16 @@ def save_cookies_to_excel(phone, cookies):
 def get_driver():
     import shutil
 
-    # Find chromium browser binary
+    # google-chrome-stable installs to /usr/bin/google-chrome
+    # chromedriver installed to /usr/local/bin/chromedriver by Dockerfile
     browser_path = (
-        shutil.which("chromium") or
-        shutil.which("chromium-browser") or
-        "/usr/bin/chromium"
+        shutil.which("google-chrome") or
+        shutil.which("google-chrome-stable") or
+        "/usr/bin/google-chrome"
     )
-    # Find chromedriver binary
     driver_path = (
         shutil.which("chromedriver") or
-        "/usr/bin/chromedriver"
+        "/usr/local/bin/chromedriver"
     )
     logging.info(f"Browser: {browser_path} | Driver: {driver_path}")
 
@@ -338,7 +338,13 @@ async def abort_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .build()
+    )
 
     setpw_conv = ConversationHandler(
         entry_points=[CommandHandler("setpw", cmd_setpw)],
@@ -359,7 +365,10 @@ def main():
     app.add_handler(CommandHandler("dlt", cmd_dlt))
 
     logging.info("Bot started.")
-    app.run_polling()
+    app.run_polling(
+        drop_pending_updates=True,   # ignore old queued updates on startup
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 if __name__ == "__main__":
     main()
