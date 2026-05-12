@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import json
+import shutil
 import time
 from telegram import Update
 from telegram.ext import (
@@ -10,7 +11,7 @@ from telegram.ext import (
 )
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
+from selenium.webdriver.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from openpyxl import Workbook, load_workbook
@@ -34,14 +35,23 @@ WAITING_PW, WAITING_PHONE = 1, 2
 
 def get_driver():
     profile_dir = os.path.abspath("chrome_profile")
-    options = Options()
 
+    # Always wipe the profile — prevents Chrome restoring Google/old session
+    if os.path.exists(profile_dir):
+        shutil.rmtree(profile_dir, ignore_errors=True)
+    os.makedirs(profile_dir, exist_ok=True)
+
+    options = Options()
     options.add_argument("--headless=new")
     options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--disable-session-crashed-bubble")
+    options.add_argument("--disable-infobars")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument(
         "user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
@@ -57,27 +67,26 @@ def get_driver():
     except Exception:
         pass
 
-    return driver, profile_dir
+    return driver
 
 
 def do_facebook_login(phone, password):
-    driver, profile_dir = get_driver()
+    driver = get_driver()
     wait = WebDriverWait(driver, 25)
 
     try:
-        # Step 1: Navigate to login page
+        # Step 1: Navigate directly to Facebook login
         driver.get("https://m.facebook.com/login/")
         time.sleep(5)
 
-        # Force navigation if stuck
+        # Force navigation if Chrome ended up somewhere else
         if "facebook.com" not in driver.current_url:
             driver.execute_script("window.location.replace('https://m.facebook.com/login/');")
             time.sleep(6)
 
         # Step 2: Dismiss cookie/consent banners
         driver.execute_script("""
-            var btns = document.querySelectorAll('button, div[role="button"], a');
-            btns.forEach(function(b) {
+            document.querySelectorAll('button, div[role="button"], a').forEach(function(b) {
                 var t = (b.innerText || '').toLowerCase();
                 if (t.includes('accept') || t.includes('allow') || t.includes('only allow')) {
                     b.click();
@@ -86,7 +95,7 @@ def do_facebook_login(phone, password):
         """)
         time.sleep(2)
 
-        # Step 3: Wait for the email field to appear
+        # Step 3: Wait for login form
         try:
             wait.until(EC.presence_of_element_located((By.NAME, "email")))
         except Exception:
@@ -94,35 +103,29 @@ def do_facebook_login(phone, password):
             return None, "Login form not found. See screenshot."
 
         # Step 4: Inject credentials using React-compatible synthetic events
-        # This properly triggers React's onChange handlers unlike plain .value assignment
+        # Plain .value= assignment is ignored by React — must use nativeInputValueSetter
         driver.execute_script("""
-            var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, 'value'
-            ).set;
+            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            var email = document.getElementsByName('email')[0];
+            var pass  = document.getElementsByName('pass')[0];
 
-            var emailField = document.getElementsByName('email')[0];
-            var passField  = document.getElementsByName('pass')[0];
+            setter.call(email, arguments[0]);
+            email.dispatchEvent(new Event('input',  { bubbles: true }));
+            email.dispatchEvent(new Event('change', { bubbles: true }));
 
-            nativeInputValueSetter.call(emailField, arguments[0]);
-            emailField.dispatchEvent(new Event('input',  { bubbles: true }));
-            emailField.dispatchEvent(new Event('change', { bubbles: true }));
-
-            nativeInputValueSetter.call(passField, arguments[1]);
-            passField.dispatchEvent(new Event('input',  { bubbles: true }));
-            passField.dispatchEvent(new Event('change', { bubbles: true }));
+            setter.call(pass, arguments[1]);
+            pass.dispatchEvent(new Event('input',  { bubbles: true }));
+            pass.dispatchEvent(new Event('change', { bubbles: true }));
         """, phone, password)
 
         time.sleep(1)
 
-        # Step 5: Click the login button (try multiple selectors)
+        # Step 5: Click the submit button
         clicked = driver.execute_script("""
             var btn = document.querySelector('[data-sigil="m_login_button"]')
                    || document.querySelector('button[type="submit"]')
                    || document.getElementsByName('login')[0];
-            if (btn) {
-                btn.click();
-                return true;
-            }
+            if (btn) { btn.click(); return true; }
             return false;
         """)
 
@@ -130,7 +133,7 @@ def do_facebook_login(phone, password):
             driver.save_screenshot(DEBUG_PHOTO)
             return None, "Could not find login button. See screenshot."
 
-        # Step 6: Poll for successful session cookie (longer initial wait)
+        # Step 6: Poll for the session cookie
         time.sleep(4)
         for _ in range(15):
             time.sleep(2)
@@ -145,15 +148,15 @@ def do_facebook_login(phone, password):
                 driver.save_screenshot(DEBUG_PHOTO)
                 return None, "Checkpoint / 2FA detected. Manual action required."
 
+            # Already redirected away from login — recheck
             if "login" not in current_url and "facebook.com" in current_url:
-                # Redirected away from login — may still be loading session
                 time.sleep(3)
                 cookies = {c['name']: c['value'] for c in driver.get_cookies()}
                 if 'c_user' in cookies:
                     return driver.get_cookies(), None
 
         driver.save_screenshot(DEBUG_PHOTO)
-        return None, "Timed out waiting for session. Wrong password or blocked."
+        return None, "Timed out. Wrong password or account blocked."
 
     except Exception as e:
         try:
@@ -178,8 +181,7 @@ def save_cookies_to_excel(phone, cookies):
         ws = wb.active
         ws.append(["#", "Phone", "Cookies"])
 
-    row_num = ws.max_row  # use current max_row as the ID
-    ws.append([row_num, phone, c_json])
+    ws.append([ws.max_row, phone, c_json])
     wb.save(EXCEL_FILE)
 
 
@@ -232,7 +234,6 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text(f"⏳ Logging in as {phone} ...")
 
-    # Run blocking Selenium login in a thread
     cookies, error = await asyncio.to_thread(do_facebook_login, phone, pw)
 
     if error:
@@ -270,13 +271,9 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # /start
     app.add_handler(CommandHandler("start", start))
-
-    # /dl
     app.add_handler(CommandHandler("dl", dl))
 
-    # /setpw conversation
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("setpw", setpw_entry)],
         states={
@@ -285,7 +282,7 @@ def main():
         fallbacks=[]
     ))
 
-    # /add conversation
+    # add_entry is a plain async function — NOT a nested CommandHandler
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("add", add_entry)],
         states={
