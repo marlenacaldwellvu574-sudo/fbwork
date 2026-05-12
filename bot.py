@@ -12,7 +12,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 EXCEL_FILE = "data.xlsx"
 
-WAIT_UID, WAIT_DATA, WAIT_PW = 1, 2, 3
+WAIT_UID, WAIT_DATA = 1, 2
 
 logging.basicConfig(level=logging.INFO)
 
@@ -30,37 +30,53 @@ init_excel()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
     await update.message.reply_text(
-        "🚀 Bot Ready\n"
+        "🚀 Bot Ready\n\n"
         "/add - Add entry\n"
-        "/setpw - Set password\n"
+        "/setpw - Set global password\n"
         "/dl - Download Excel\n"
-        "/dlt - Reset file"
+        "/dlt - Reset Excel"
     )
 
-# ---------- ADD ----------
+# ---------- SET PASSWORD ----------
+async def setpw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    pw = update.message.text.replace("/setpw", "").strip()
+
+    if not pw:
+        await update.message.reply_text("Send like: /setpw your_password")
+        return
+
+    with open("password.txt", "w") as f:
+        f.write(pw)
+
+    await update.message.reply_text("✅ Global password saved")
+
+# ---------- ADD FLOW ----------
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
     await update.message.reply_text("Send UID:")
     return WAIT_UID
 
 async def get_uid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["uid"] = update.message.text.strip()
-    await update.message.reply_text("Now send DATA:")
+    await update.message.reply_text("Send DATA:")
     return WAIT_DATA
 
 async def get_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["data"] = update.message.text.strip()
-
-    await update.message.reply_text("Send password (or type skip):")
-    return WAIT_PW
-
-async def get_pw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pw = update.message.text.strip()
-
     uid = context.user_data["uid"]
-    data = context.user_data["data"]
+    data = update.message.text.strip()
+
+    # load password
+    pw = ""
+    if os.path.exists("password.txt"):
+        with open("password.txt", "r") as f:
+            pw = f.read().strip()
 
     wb = load_workbook(EXCEL_FILE)
     ws = wb.active
@@ -68,7 +84,7 @@ async def get_pw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ws.append([uid, pw, data])
     wb.save(EXCEL_FILE)
 
-    await update.message.reply_text("✅ Saved to Excel")
+    await update.message.reply_text("✅ Saved successfully")
     return ConversationHandler.END
 
 # ---------- DOWNLOAD ----------
@@ -100,12 +116,12 @@ def main():
         states={
             WAIT_UID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_uid)],
             WAIT_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_data)],
-            WAIT_PW: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_pw)],
         },
         fallbacks=[]
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("setpw", setpw))
     app.add_handler(conv)
     app.add_handler(CommandHandler("dl", dl))
     app.add_handler(CommandHandler("dlt", dlt))
