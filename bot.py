@@ -70,16 +70,23 @@ def save_cookies_to_excel(phone, cookies):
     wb.save(EXCEL_FILE)
 
 def get_driver():
-    # Find chromedriver — use system package (always matches installed Chromium)
     import shutil
+
+    # Find chromium browser binary
+    browser_path = (
+        shutil.which("chromium") or
+        shutil.which("chromium-browser") or
+        "/usr/bin/chromium"
+    )
+    # Find chromedriver binary
     driver_path = (
         shutil.which("chromedriver") or
-        shutil.which("chromedriver-linux64") or
         "/usr/bin/chromedriver"
     )
-    logging.info(f"Using chromedriver at: {driver_path}")
+    logging.info(f"Browser: {browser_path} | Driver: {driver_path}")
 
     options = Options()
+    options.binary_location = browser_path
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
