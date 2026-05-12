@@ -7,15 +7,26 @@ from telegram.ext import (
 )
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 from openpyxl import Workbook, load_workbook
 import time
 import json
 
-BOT_TOKEN  = os.getenv("BOT_TOKEN", "8705041013:AAHi5t9sFDaD0AzjxevXgwRm4u0ZiVDzAno")
-ADMIN_ID   = int(os.getenv("ADMIN_ID", "6935210590"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+_admin_id  = os.getenv("ADMIN_ID")
+
+if not BOT_TOKEN:
+    raise SystemExit("ERROR: BOT_TOKEN environment variable is not set.")
+if not _admin_id:
+    raise SystemExit("ERROR: ADMIN_ID environment variable is not set. Get your numeric ID from @userinfobot on Telegram.")
+try:
+    ADMIN_ID = int(_admin_id)
+except ValueError:
+    raise SystemExit(f"ERROR: ADMIN_ID must be a number, got: {_admin_id!r}")
 
 PASSWORD_FILE = "fb_password.txt"
 EXCEL_FILE    = "cookies.xlsx"
@@ -61,15 +72,21 @@ def save_cookies_to_excel(phone, cookies):
 
 def get_driver():
     options = Options()
-    options.binary_location = "/usr/bin/chromium"
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    return webdriver.Chrome(options=options)
+    service = Service(ChromeDriverManager().install())
+    return webdriver.Chrome(service=service, options=options)
 
 def do_facebook_login(phone, password):
     driver = get_driver()
