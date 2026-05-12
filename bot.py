@@ -27,7 +27,7 @@ PASSWORD_FILE = "fb_password.txt"
 EXCEL_FILE = "cookies.xlsx"
 DEBUG_PHOTO = "debug.png"
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 WAITING_PW, WAITING_PHONE = 1, 2
 
 # --- BROWSER ENGINE ---
@@ -43,7 +43,6 @@ def get_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
     
-    # Using a clean Mobile User Agent
     options.add_argument(
         "user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
@@ -61,16 +60,13 @@ def do_facebook_login(phone, password):
     driver, profile_dir = get_driver()
     wait = WebDriverWait(driver, 25)
     try:
-        # Step 1: Navigate
         driver.get("https://m.facebook.com/login/")
         time.sleep(5)
         
-        # Bypass potential Google/Empty page
         if "facebook.com" not in driver.current_url:
             driver.execute_script("window.location.replace('https://m.facebook.com/login/');")
             time.sleep(6)
 
-        # Step 2: Inject Credentials
         try:
             wait.until(EC.presence_of_element_located((By.NAME, "email")))
             
@@ -81,51 +77,31 @@ def do_facebook_login(phone, password):
             driver.execute_script(f"document.getElementsByName('pass')[0].value='{s_pass}';")
             time.sleep(1)
             
-            # Step 3: MULTI-SELECTOR LOGIN CLICK (The fix for your current hang)
+            # Smart Login Click
             driver.execute_script("""
-                var selectors = [
-                    'button[name="login"]', 
-                    'button[type="submit"]', 
-                    'input[type="submit"]',
-                    'div[role="button"]',
-                    '#loginbutton'
-                ];
-                var clicked = false;
+                var selectors = ['button[name="login"]', 'button[type="submit"]', '[role="button"]'];
                 for (var sel of selectors) {
                     var btn = document.querySelector(sel);
-                    if (btn && btn.innerText.toLowerCase().includes('log') || (btn && btn.name === 'login')) {
-                        btn.click();
-                        clicked = true;
-                        break;
-                    }
-                }
-                // Fallback: If no name-match, click the first submit button found
-                if(!clicked) {
-                    var fallback = document.querySelector('button[type="submit"]');
-                    if(fallback) fallback.click();
+                    if (btn) { btn.click(); break; }
                 }
             """)
-            logging.info("Login command executed.")
+            logging.info("Login clicked via JS.")
         except Exception:
             driver.save_screenshot(DEBUG_PHOTO)
-            return None, "Login fields not found."
+            return None, "Login form missing."
 
-        # Step 4: Capture Cookies
+        # Wait for session
         for _ in range(15):
             time.sleep(2)
             cookies = driver.get_cookies()
-            cookie_names = [c['name'] for c in cookies]
-            
-            if 'c_user' in cookie_names:
-                logging.info("Success! Session captured.")
+            if any(c['name'] == 'c_user' for c in cookies):
                 return cookies, None
-            
             if "checkpoint" in driver.current_url:
                 driver.save_screenshot(DEBUG_PHOTO)
-                return None, "Verification Required (Checkpoint)."
+                return None, "Verification Required."
 
         driver.save_screenshot(DEBUG_PHOTO)
-        return None, "Timed out waiting for cookies after click."
+        return None, "Login timeout."
 
     except Exception as e:
         driver.save_screenshot(DEBUG_PHOTO)
@@ -133,15 +109,24 @@ def do_facebook_login(phone, password):
     finally:
         driver.quit()
 
-# --- TELEGRAM INTERFACE ---
+# --- HANDLERS ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    await update.message.reply_text("🚀 Bot Active\n/setpw - Set Pass\n/add - Get Cookies\n/dl - Excel")
+
+async def cmd_add_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    await update.message.reply_text("Send phone number:")
+    return WAITING_PHONE
 
 async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
     if not os.path.exists(PASSWORD_FILE):
-        await update.message.reply_text("❌ Set password first via /setpw")
+        await update.message.reply_text("❌ Set password first.")
         return ConversationHandler.END
     
-    pw = open(PASSWORD_FILE).read().strip()
+    with open(PASSWORD_FILE, "r") as f: pw = f.read().strip()
     msg = await update.message.reply_text(f"⏳ Processing {phone}...")
 
     if os.path.exists(DEBUG_PHOTO): os.remove(DEBUG_PHOTO)
@@ -151,10 +136,10 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if error:
         await msg.edit_text(f"❌ {error}")
         if os.path.exists(DEBUG_PHOTO):
-            await update.message.reply_photo(photo=open(DEBUG_PHOTO, 'rb'), caption="Failure State")
+            await update.message.reply_photo(photo=open(DEBUG_PHOTO, 'rb'), caption="View failure")
     else:
         save_cookies_to_excel(phone, cookies)
-        await msg.edit_text(f"✅ Success! {len(cookies)} cookies saved.")
+        await msg.edit_text(f"✅ Success! Cookies saved for {phone}.")
     return ConversationHandler.END
 
 def save_cookies_to_excel(phone, cookies):
@@ -167,14 +152,10 @@ def save_cookies_to_excel(phone, cookies):
     ws.append([ws.max_row, phone, c_json])
     wb.save(EXCEL_FILE)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("Bot Active\n/setpw - Set Pass\n/add - Get Cookies\n/dl - Get Excel")
-
-async def setpw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("Send FB Password:")
-        return WAITING_PW
+async def cmd_setpw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    await update.message.reply_text("Send FB Password:")
+    return WAITING_PW
 
 async def save_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(PASSWORD_FILE, "w") as f: f.write(update.message.text.strip())
@@ -187,18 +168,25 @@ async def dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dl", dl))
+    
+    # 1. Add command
     app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("setpw", setpw)],
-        states={WAITING_PW: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_password)]},
-        fallbacks=[]
-    ))
-    app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("add", lambda u, c: u.message.reply_text("Send phone:"))],
+        entry_points=[CommandHandler("add", cmd_add_entry)],
         states={WAITING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)]},
         fallbacks=[]
     ))
+    
+    # 2. Set password
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("setpw", cmd_setpw)],
+        states={WAITING_PW: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_password)]},
+        fallbacks=[]
+    ))
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("dl", dl))
+    
+    logging.info("Bot is polling...")
     app.run_polling()
 
 if __name__ == "__main__":
