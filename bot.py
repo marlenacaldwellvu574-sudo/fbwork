@@ -70,23 +70,9 @@ def save_cookies_to_excel(phone, cookies):
     wb.save(EXCEL_FILE)
 
 def get_driver():
-    import shutil
-
-    # google-chrome-stable installs to /usr/bin/google-chrome
-    # chromedriver installed to /usr/local/bin/chromedriver by Dockerfile
-    browser_path = (
-        shutil.which("google-chrome") or
-        shutil.which("google-chrome-stable") or
-        "/usr/bin/google-chrome"
-    )
-    driver_path = (
-        shutil.which("chromedriver") or
-        "/usr/local/bin/chromedriver"
-    )
-    logging.info(f"Browser: {browser_path} | Driver: {driver_path}")
-
+    # selenium/standalone-chrome image has chrome + chromedriver pre-installed
+    # and on PATH. Let Selenium find them automatically via Service().
     options = Options()
-    options.binary_location = browser_path
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -100,31 +86,54 @@ def get_driver():
     )
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    service = Service(executable_path=driver_path)
-    return webdriver.Chrome(service=service, options=options)
+    return webdriver.Chrome(options=options)
 
 def do_facebook_login(phone, password):
     driver = get_driver()
     try:
         driver.get("https://www.facebook.com")
         wait = WebDriverWait(driver, 20)
+        time.sleep(3)  # let page fully render
 
-        # Accept cookie/consent popup if it appears
-        try:
-            accept_btn = wait.until(EC.element_to_be_clickable(
-                (By.XPATH, "//button[contains(text(),'Accept') or contains(text(),'Allow') or contains(text(),'OK')]")
-            ))
-            accept_btn.click()
-            time.sleep(1)
-        except Exception:
-            pass
+        # Dismiss any consent/cookie popups — try multiple times
+        for _ in range(3):
+            try:
+                btn = driver.find_element(By.XPATH,
+                    "//*[self::button or self::a or self::div]"
+                    "[@role='button' or self::button]"
+                    "[contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'ACCEPT')"
+                    " or contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'ALLOW')"
+                    " or contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'DECLINE')"
+                    " or contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'REJECT')"
+                    " or contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'CLOSE')"
+                    " or contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'ONLY ALLOW')"
+                    "]"
+                )
+                btn.click()
+                time.sleep(1)
+            except Exception:
+                break
 
-        # Wait for and fill email field
-        try:
-            email_field = wait.until(EC.presence_of_element_located((By.ID, "email")))
-        except Exception:
+        # Try m.facebook.com as fallback if login form not found on desktop
+        email_field = None
+        for url in ["https://www.facebook.com", "https://m.facebook.com"]:
+            try:
+                if email_field is None and url != "https://www.facebook.com":
+                    driver.get(url)
+                    time.sleep(3)
+                email_field = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "email"))
+                )
+                logging.info(f"Login form found on: {driver.current_url}")
+                break
+            except Exception:
+                email_field = None
+
+        if email_field is None:
+            # Save page source for debugging
+            logging.error(f"Page source snippet: {driver.page_source[:500]}")
             driver.quit()
-            return None, "Could not find login form. Facebook may have changed layout or is blocked."
+            return None, "Could not find login form on facebook.com or m.facebook.com. Facebook may be blocking the headless browser."
 
         email_field.clear()
         email_field.send_keys(phone)
