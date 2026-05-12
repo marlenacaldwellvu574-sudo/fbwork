@@ -35,11 +35,6 @@ WAITING_PW, WAITING_PHONE = 1, 2
 # ── BROWSER ───────────────────────────────────────────────────────────────────
 
 def get_driver():
-    """
-    Create a Chrome driver using a brand-new temp directory every single time.
-    This guarantees Chrome has zero memory of any previous session.
-    Returns (driver, tmp_dir) — caller must delete tmp_dir after driver.quit().
-    """
     tmp_dir = tempfile.mkdtemp(prefix="chrome_tmp_")
 
     options = Options()
@@ -52,10 +47,10 @@ def get_driver():
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
     options.add_argument("--disable-extensions")
+    options.add_argument("--disable-popup-blocking")
     options.add_argument("--disable-session-crashed-bubble")
     options.add_argument("--disable-infobars")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--restore-last-session=false")
     options.add_argument(
         "user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
@@ -63,7 +58,6 @@ def get_driver():
 
     driver = webdriver.Chrome(options=options)
 
-    # Hide the automation flag from JavaScript
     try:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -74,33 +68,40 @@ def get_driver():
     return driver, tmp_dir
 
 
+def switch_to_facebook_tab(driver):
+    """If a new tab opened, switch to the one with facebook.com in the URL."""
+    handles = driver.window_handles
+    for handle in handles:
+        driver.switch_to.window(handle)
+        if "facebook.com" in driver.current_url:
+            logger.info("Switched to Facebook tab: %s", driver.current_url)
+            return
+    # If no facebook tab found, stay on last handle
+    driver.switch_to.window(handles[-1])
+    logger.info("No Facebook tab found, on: %s", driver.current_url)
+
+
 def do_facebook_login(phone: str, password: str):
-    """
-    Open m.facebook.com/login, fill credentials, return cookies.
-    Returns: (list_of_cookie_dicts, None)  on success
-             (None, error_string)           on failure
-    """
     driver = None
     tmp_dir = None
     try:
         driver, tmp_dir = get_driver()
         wait = WebDriverWait(driver, 25)
 
-        # ── 1. Navigate to Facebook login ────────────────────────────────────
+        # ── 1. Navigate to Facebook login ─────────────────────────────────────
         driver.get("https://m.facebook.com/login/")
         time.sleep(5)
+        logger.info("After get(), URL: %s | tabs: %d",
+                    driver.current_url, len(driver.window_handles))
 
-        # If Chrome still ended up elsewhere (e.g. blank page), force-navigate
+        # If we ended up elsewhere, force-navigate
         if "facebook.com" not in driver.current_url:
             driver.execute_script(
                 "window.location.replace('https://m.facebook.com/login/');"
             )
             time.sleep(6)
 
-        # Log where we actually are for debugging
-        logger.info("After navigation, current URL: %s", driver.current_url)
-
-        # ── 2. Dismiss cookie / consent banners ──────────────────────────────
+        # ── 2. Dismiss cookie / consent banners ───────────────────────────────
         driver.execute_script("""
             document.querySelectorAll('button, div[role="button"], a')
                 .forEach(function(b) {
@@ -113,54 +114,53 @@ def do_facebook_login(phone: str, password: str):
         """)
         time.sleep(2)
 
-        # ── 3. Wait for the login form ────────────────────────────────────────
+        # ── 3. Wait for the login form ─────────────────────────────────────────
         try:
             wait.until(EC.presence_of_element_located((By.NAME, "email")))
         except Exception:
             driver.save_screenshot(DEBUG_PHOTO)
             return None, "Login form not found. See screenshot."
 
-        # ── 4. Inject credentials via React-compatible synthetic events ───────
-        driver.execute_script("""
-            var setter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value').set;
+        # ── 4. Fill credentials using Selenium directly (not JS injection) ─────
+        # JS injection was causing the form to submit to a new tab.
+        # Using Selenium's send_keys properly triggers all browser events.
+        email_el = driver.find_element(By.NAME, "email")
+        pass_el  = driver.find_element(By.NAME, "pass")
 
-            var emailEl = document.getElementsByName('email')[0];
-            var passEl  = document.getElementsByName('pass')[0];
+        email_el.clear()
+        email_el.send_keys(phone)
+        time.sleep(0.5)
 
-            setter.call(emailEl, arguments[0]);
-            emailEl.dispatchEvent(new Event('input',  { bubbles: true }));
-            emailEl.dispatchEvent(new Event('change', { bubbles: true }));
+        pass_el.clear()
+        pass_el.send_keys(password)
+        time.sleep(0.5)
 
-            setter.call(passEl, arguments[1]);
-            passEl.dispatchEvent(new Event('input',  { bubbles: true }));
-            passEl.dispatchEvent(new Event('change', { bubbles: true }));
-        """, phone, password)
+        # ── 5. Submit the form ────────────────────────────────────────────────
+        # Use the submit button; fall back to form.submit() if button not found
+        try:
+            btn = (
+                driver.find_element(By.CSS_SELECTOR, '[data-sigil="m_login_button"]')
+                if driver.find_elements(By.CSS_SELECTOR, '[data-sigil="m_login_button"]')
+                else driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
+            )
+            btn.click()
+        except Exception:
+            # Last resort: submit the form directly
+            driver.execute_script(
+                "document.querySelector('form').submit();"
+            )
 
-        time.sleep(1)
-
-        # ── 5. Click the submit button ────────────────────────────────────────
-        clicked = driver.execute_script("""
-            var btn = document.querySelector('[data-sigil="m_login_button"]')
-                   || document.querySelector('button[type="submit"]')
-                   || document.getElementsByName('login')[0];
-            if (btn) { btn.click(); return true; }
-            return false;
-        """)
-
-        if not clicked:
-            driver.save_screenshot(DEBUG_PHOTO)
-            return None, "Could not find login button. See screenshot."
-
-        # ── 6. Poll until session cookie appears ──────────────────────────────
         time.sleep(4)
 
+        # ── 6. Switch to the Facebook tab if a new one opened ─────────────────
+        switch_to_facebook_tab(driver)
+
+        # ── 7. Poll until session cookie appears ──────────────────────────────
         for _ in range(15):
             time.sleep(2)
             current_url = driver.current_url
             cookie_dict = {c['name']: c['value'] for c in driver.get_cookies()}
-
-            logger.info("Polling — URL: %s | has c_user: %s",
+            logger.info("Polling — URL: %s | c_user: %s",
                         current_url, 'c_user' in cookie_dict)
 
             if 'c_user' in cookie_dict:
@@ -171,12 +171,8 @@ def do_facebook_login(phone: str, password: str):
                 driver.save_screenshot(DEBUG_PHOTO)
                 return None, "Checkpoint / 2FA detected. Manual action required."
 
-            if "login" not in current_url and "facebook.com" in current_url:
-                time.sleep(3)
-                cookie_dict = {c['name']: c['value'] for c in driver.get_cookies()}
-                if 'c_user' in cookie_dict:
-                    logger.info("Login successful for %s (delayed)", phone)
-                    return driver.get_cookies(), None
+            # Re-switch in case another tab opened mid-flow
+            switch_to_facebook_tab(driver)
 
         driver.save_screenshot(DEBUG_PHOTO)
         return None, "Timed out. Wrong password or account is blocked."
@@ -195,7 +191,6 @@ def do_facebook_login(phone: str, password: str):
                 driver.quit()
             except Exception:
                 pass
-        # Always clean up the temp profile directory
         if tmp_dir and os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -204,7 +199,6 @@ def do_facebook_login(phone: str, password: str):
 
 def save_cookies_to_excel(phone: str, cookies: list) -> None:
     c_json = json.dumps(cookies)
-
     if os.path.exists(EXCEL_FILE):
         wb = load_workbook(EXCEL_FILE)
         ws = wb.active
@@ -212,7 +206,6 @@ def save_cookies_to_excel(phone: str, cookies: list) -> None:
         wb = Workbook()
         ws = wb.active
         ws.append(["#", "Phone", "Cookies"])
-
     row_id = ws.max_row
     ws.append([row_id, phone, c_json])
     wb.save(EXCEL_FILE)
@@ -230,13 +223,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/dl     — Download cookies Excel"
     )
 
-
 async def setpw_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return ConversationHandler.END
     await update.message.reply_text("Send the Facebook password:")
     return WAITING_PW
-
 
 async def save_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pw = update.message.text.strip()
@@ -245,13 +236,11 @@ async def save_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Password saved.")
     return ConversationHandler.END
 
-
 async def add_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return ConversationHandler.END
     await update.message.reply_text("📱 Send the phone number (e.g. +51928065251):")
     return WAITING_PHONE
-
 
 async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
@@ -268,34 +257,25 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     msg = await update.message.reply_text(f"⏳ Logging in as {phone} …")
-
     cookies, error = await asyncio.to_thread(do_facebook_login, phone, pw)
 
     if error:
         await msg.edit_text(f"❌ {error}")
         if os.path.exists(DEBUG_PHOTO):
             with open(DEBUG_PHOTO, "rb") as photo_fh:
-                await update.message.reply_photo(
-                    photo=photo_fh,
-                    caption="🔍 Debug screenshot"
-                )
+                await update.message.reply_photo(photo=photo_fh, caption="🔍 Debug screenshot")
     else:
         save_cookies_to_excel(phone, cookies)
         await msg.edit_text(f"✅ Success! {len(cookies)} cookies saved for {phone}.")
 
     return ConversationHandler.END
 
-
 async def dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     if os.path.exists(EXCEL_FILE):
         with open(EXCEL_FILE, "rb") as fh:
-            await update.message.reply_document(
-                document=fh,
-                filename=EXCEL_FILE,
-                caption="📊 Cookies Excel"
-            )
+            await update.message.reply_document(document=fh, filename=EXCEL_FILE, caption="📊 Cookies Excel")
     else:
         await update.message.reply_text("❌ No Excel file found yet.")
 
@@ -307,29 +287,21 @@ def main():
         raise ValueError("BOT_TOKEN environment variable is not set.")
 
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dl", dl))
-
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("setpw", setpw_entry)],
-        states={
-            WAITING_PW: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_password)],
-        },
+        states={WAITING_PW: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_password)]},
         fallbacks=[],
     ))
-
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("add", add_entry)],
-        states={
-            WAITING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)],
-        },
+        states={WAITING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)]},
         fallbacks=[],
     ))
 
     logger.info("Bot is running…")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
