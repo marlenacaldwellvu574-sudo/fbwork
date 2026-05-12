@@ -15,8 +15,8 @@ from openpyxl import Workbook, load_workbook
 import time
 import json
 
-BOT_TOKEN  = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
-ADMIN_ID   = int(os.getenv("ADMIN_ID", "YOUR_TELEGRAM_ID"))
+BOT_TOKEN  = os.getenv("BOT_TOKEN", "8705041013:AAHi5t9sFDaD0AzjxevXgwRm4u0ZiVDzAno")
+ADMIN_ID   = int(os.getenv("ADMIN_ID", "6935210590"))
 
 PASSWORD_FILE = "fb_password.txt"
 EXCEL_FILE    = "cookies.xlsx"
