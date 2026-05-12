@@ -11,7 +11,6 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 from openpyxl import Workbook, load_workbook
 import time
 import json
@@ -71,6 +70,15 @@ def save_cookies_to_excel(phone, cookies):
     wb.save(EXCEL_FILE)
 
 def get_driver():
+    # Find chromedriver — use system package (always matches installed Chromium)
+    import shutil
+    driver_path = (
+        shutil.which("chromedriver") or
+        shutil.which("chromedriver-linux64") or
+        "/usr/bin/chromedriver"
+    )
+    logging.info(f"Using chromedriver at: {driver_path}")
+
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -85,7 +93,7 @@ def get_driver():
     )
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    service = Service(ChromeDriverManager().install())
+    service = Service(executable_path=driver_path)
     return webdriver.Chrome(service=service, options=options)
 
 def do_facebook_login(phone, password):
