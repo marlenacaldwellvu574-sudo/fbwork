@@ -14,6 +14,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from openpyxl import Workbook, load_workbook
 import time
 import json
+import tempfile
+import shutil
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 _admin_id  = os.getenv("ADMIN_ID")
@@ -70,9 +72,10 @@ def save_cookies_to_excel(phone, cookies):
     wb.save(EXCEL_FILE)
 
 def get_driver():
-    # selenium/standalone-chrome image has chrome + chromedriver pre-installed
-    # and on PATH. Let Selenium find them automatically via Service().
+    # Fresh temp profile every time = no leftover cookies/cache from previous logins
+    profile_dir = tempfile.mkdtemp(prefix="chrome_profile_")
     options = Options()
+    options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -86,10 +89,10 @@ def get_driver():
     )
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    return webdriver.Chrome(options=options)
+    return webdriver.Chrome(options=options), profile_dir
 
 def do_facebook_login(phone, password):
-    driver = get_driver()
+    driver, profile_dir = get_driver()
     try:
         driver.get("https://www.facebook.com")
         wait = WebDriverWait(driver, 20)
@@ -200,6 +203,7 @@ def do_facebook_login(phone, password):
             )
 
         driver.quit()
+        shutil.rmtree(profile_dir, ignore_errors=True)
         return cookies, None
 
     except Exception as e:
@@ -208,6 +212,7 @@ def do_facebook_login(phone, password):
             driver.quit()
         except Exception:
             pass
+        shutil.rmtree(profile_dir, ignore_errors=True)
         return None, f"Unexpected error: {str(e)}"
 
 # ─────────────────────────────────────────────
@@ -335,6 +340,29 @@ async def cmd_dlt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No Excel file to delete.")
 
 # ─────────────────────────────────────────────
+#  /clearbrowser
+# ─────────────────────────────────────────────
+
+async def cmd_clearbrowser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    import glob
+    # Remove any leftover chrome profile temp dirs
+    removed = 0
+    for d in glob.glob("/tmp/chrome_profile_*"):
+        shutil.rmtree(d, ignore_errors=True)
+        removed += 1
+    await update.message.reply_text(
+        f"🧹 *Browser data cleared!*
+
+"
+        f"Removed {removed} leftover profile(s).
+"
+        f"Next /add will start with a completely fresh browser.",
+        parse_mode="Markdown"
+    )
+
+# ─────────────────────────────────────────────
 #  /abort
 # ─────────────────────────────────────────────
 
@@ -372,6 +400,7 @@ def main():
     app.add_handler(add_conv)
     app.add_handler(CommandHandler("dl",  cmd_dl))
     app.add_handler(CommandHandler("dlt", cmd_dlt))
+    app.add_handler(CommandHandler("clearbrowser", cmd_clearbrowser))
 
     logging.info("Bot started.")
     app.run_polling(
