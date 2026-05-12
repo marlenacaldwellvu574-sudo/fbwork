@@ -353,12 +353,7 @@ async def cmd_clearbrowser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shutil.rmtree(d, ignore_errors=True)
         removed += 1
     await update.message.reply_text(
-        f"🧹 *Browser data cleared!*
-
-"
-        f"Removed {removed} leftover profile(s).
-"
-        f"Next /add will start with a completely fresh browser.",
+        f"Browser data cleared!\n\nRemoved {removed} leftover profile(s).\nNext /add will start with a completely fresh browser.",
         parse_mode="Markdown"
     )
 
