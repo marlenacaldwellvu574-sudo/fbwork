@@ -135,20 +135,33 @@ def do_facebook_login(phone: str, password: str):
         pass_el.send_keys(password)
         time.sleep(0.5)
 
-        # ── 5. Submit the form ────────────────────────────────────────────────
-        # Use the submit button; fall back to form.submit() if button not found
-        try:
-            btn = (
-                driver.find_element(By.CSS_SELECTOR, '[data-sigil="m_login_button"]')
-                if driver.find_elements(By.CSS_SELECTOR, '[data-sigil="m_login_button"]')
-                else driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
-            )
-            btn.click()
-        except Exception:
-            # Last resort: submit the form directly
-            driver.execute_script(
-                "document.querySelector('form').submit();"
-            )
+        # ── 5. Click the login button ─────────────────────────────────────────
+        # Try every known selector. Final fallback: Enter key on password field.
+        from selenium.webdriver.common.keys import Keys
+
+        login_selectors = [
+            (By.CSS_SELECTOR, '[data-sigil="m_login_button"]'),
+            (By.CSS_SELECTOR, 'button[type="submit"]'),
+            (By.CSS_SELECTOR, 'button[name="login"]'),
+            (By.XPATH, '//button[normalize-space(text())="Log in"]'),
+            (By.XPATH, '//div[@role="button" and normalize-space(text())="Log in"]'),
+        ]
+
+        clicked = False
+        for by, selector in login_selectors:
+            els = driver.find_elements(by, selector)
+            if els:
+                try:
+                    els[0].click()
+                    clicked = True
+                    logger.info("Clicked login button via: %s", selector)
+                    break
+                except Exception:
+                    continue
+
+        if not clicked:
+            pass_el.send_keys(Keys.RETURN)
+            logger.info("Used Enter key to submit")
 
         time.sleep(4)
 
