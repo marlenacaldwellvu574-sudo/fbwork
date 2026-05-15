@@ -8,7 +8,7 @@ from telegram.ext import (
 from openpyxl import Workbook, load_workbook
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6935210590","5120527276"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "5120527276"))
 
 EXCEL_FILE = "data.xlsx"
 
